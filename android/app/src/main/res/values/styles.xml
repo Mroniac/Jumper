@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="JumperTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorAccent">#2C55E0</item>
+        <item name="android:colorPrimary">#2C55E0</item>
+        <item name="android:colorPrimaryDark">#1E3FB0</item>
+        <item name="android:windowBackground">#EEF1F6</item>
+    </style>
+</resources>

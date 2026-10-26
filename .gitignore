@@ -1,0 +1,22 @@
+# Личные данные Jumper — не публиковать
+jumper_clips.json
+jumper_clips.json.tmp
+jumper_files/
+
+# Сборка ПК-версии
+pc/build/
+pc/dist/
+*.spec
+*.exe
+__pycache__/
+
+# Android
+android/.gradle/
+android/.idea/
+android/local.properties
+android/build/
+android/app/build/
+android/captures/
+*.apk
+*.iml
+.DS_Store

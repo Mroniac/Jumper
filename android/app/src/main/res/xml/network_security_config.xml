@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Jumper работает только внутри домашней сети, поэтому обычный http разрешён -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

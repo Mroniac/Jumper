@@ -1,0 +1,514 @@
+#!/usr/bin/env python3
+"""Jumper — передача кода и файлов (до 100 МБ) между ПК и телефоном по домашней Wi-Fi сети.
+
+Запуск:  python jumper.py   (или Jumper.exe после сборки)
+Страница встроена в этот файл, больше ничего не нужно.
+"""
+from urllib.parse import unquote, quote
+import json, re, os, socket, sys, threading, time, uuid, webbrowser
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+
+PORT = 8765
+DISCOVERY_PORT = 8766  # приложение Jumper на телефоне ищет ПК через этот порт
+MAX_CLIPS = 60
+# В собранном exe данные лежат рядом с exe, а не во временной папке
+HERE = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+STORE = os.path.join(HERE, "jumper_clips.json")
+FILES_DIR = os.path.join(HERE, "jumper_files")
+MAX_FILE = 100 * 1024 * 1024
+os.makedirs(FILES_DIR, exist_ok=True)
+lock = threading.Lock()
+
+
+def load():
+    try:
+        with open(STORE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def save(clips):
+    tmp = STORE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(clips, f, ensure_ascii=False)
+    os.replace(tmp, STORE)
+
+
+clips = load()
+
+
+def lan_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+def drop_file(clip):
+    if clip.get("kind") == "file":
+        try:
+            os.remove(os.path.join(FILES_DIR, clip["id"]))
+        except OSError:
+            pass
+
+
+def add_clip(clip):
+    with lock:
+        clips.insert(0, clip)
+        for old in clips[MAX_CLIPS:]:
+            drop_file(old)
+        del clips[MAX_CLIPS:]
+        save(clips)
+
+
+def discovery_responder():
+    """Отвечает телефону на широковещательный запрос «где Jumper?»."""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", DISCOVERY_PORT))
+    except OSError:
+        print("Автопоиск не запустился (порт 8766 занят) — в приложении введите адрес вручную.")
+        return
+    reply = ("JUMPER_HERE %d %s" % (PORT, socket.gethostname())).encode("utf-8")
+    while True:
+        try:
+            data, addr = sock.recvfrom(256)
+            if data.strip() == b"JUMPER_DISCOVER":
+                sock.sendto(reply, addr)
+        except OSError:
+            time.sleep(0.5)
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def send(self, code, body=b"", ctype="application/json; charset=utf-8"):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path in ("/", "/index.html", "/jumper.html"):
+            self.send(200, PAGE_HTML.encode("utf-8"), "text/html; charset=utf-8")
+        elif self.path.startswith("/api/files/"):
+            cid = self.path.rsplit("/", 1)[-1]
+            with lock:
+                clip = next((c for c in clips if c["id"] == cid and c.get("kind") == "file"), None)
+            path = os.path.join(FILES_DIR, cid)
+            if not clip or not re.fullmatch(r"[0-9a-f]{12}", cid) or not os.path.exists(path):
+                return self.send(404)
+            size = os.path.getsize(path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(clip["name"]))
+            self.end_headers()
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(1024 * 256)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        elif self.path == "/api/clips":
+            with lock:
+                body = json.dumps(clips, ensure_ascii=False).encode()
+            self.send(200, body)
+        else:
+            self.send(404)
+
+    def do_POST(self):
+        if self.path == "/api/files":
+            return self.upload()
+        if self.path != "/api/clips":
+            return self.send(404)
+        n = int(self.headers.get("Content-Length", 0))
+        if n > 2_000_000:
+            return self.send(413)
+        try:
+            data = json.loads(self.rfile.read(n))
+            text = str(data["text"])
+        except Exception:
+            return self.send(400)
+        clip = {
+            "id": uuid.uuid4().hex[:12],
+            "text": text,
+            "device": str(data.get("device", ""))[:20],
+            "createdAt": int(time.time() * 1000),
+        }
+        add_clip(clip)
+        self.send(201, b"{}")
+
+    def upload(self):
+        n = int(self.headers.get("Content-Length", 0))
+        if n > MAX_FILE:
+            return self.send(413)
+        name = os.path.basename(unquote(self.headers.get("X-Filename", "file")).replace("\\", "/")) or "file"
+        cid = uuid.uuid4().hex[:12]
+        path = os.path.join(FILES_DIR, cid)
+        left = n
+        try:
+            with open(path, "wb") as f:
+                while left > 0:
+                    chunk = self.rfile.read(min(left, 1024 * 256))
+                    if not chunk:
+                        raise IOError("connection closed")
+                    f.write(chunk)
+                    left -= len(chunk)
+        except Exception:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return self.send(400)
+        add_clip({
+            "id": cid, "kind": "file", "name": name[:200], "size": n,
+            "text": "", "device": unquote(self.headers.get("X-Device", ""))[:20],
+            "createdAt": int(time.time() * 1000),
+        })
+        self.send(201, b"{}")
+
+    def do_DELETE(self):
+        if not self.path.startswith("/api/clips/"):
+            return self.send(404)
+        cid = self.path.rsplit("/", 1)[-1]
+        with lock:
+            for c in clips:
+                if c["id"] == cid:
+                    drop_file(c)
+            clips[:] = [c for c in clips if c["id"] != cid]
+            save(clips)
+        self.send(200, b"{}")
+
+
+PAGE_HTML = r'''<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Jumper</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600&family=Unbounded:wght@600&family=JetBrains+Mono:wght@400;600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<style>
+/* Layout: one column — composer on top, a live feed of code clips below, newest first */
+:root{
+  --bg:#EEF1F6; --panel:#FFFFFF; --code:#F6F8FB; --ink:#18202E; --muted:#5E6A80; --line:#D7DDE8;
+  --accent:#2C55E0; --accent-ink:#FFFFFF; --ok:#1F8A4C; --danger:#C2373B;
+  --k:#8A2DC2; --s:#1F7A3E; --n:#B25E00; --c:#7D879A; --f:#2C55E0; --t:#0B7C8C;
+  --f-ui:"Onest",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-brand:"Unbounded","Onest",system-ui,sans-serif;
+  --f-code:"JetBrains Mono",ui-monospace,"SFMono-Regular",Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0F131B; --panel:#171C27; --code:#11151E; --ink:#E4E8F0; --muted:#8B95A8; --line:#283043;
+  --accent:#6F8DFF; --accent-ink:#0B0F18; --ok:#4CC584; --danger:#F07A7D;
+  --k:#C792EA; --s:#A5D68A; --n:#F2A65A; --c:#6C778C; --f:#82AAFF; --t:#64D3DE; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0F131B; --panel:#171C27; --code:#11151E; --ink:#E4E8F0; --muted:#8B95A8; --line:#283043;
+  --accent:#6F8DFF; --accent-ink:#0B0F18; --ok:#4CC584; --danger:#F07A7D;
+  --k:#C792EA; --s:#A5D68A; --n:#F2A65A; --c:#6C778C; --f:#82AAFF; --t:#64D3DE; color-scheme:dark}
+html,body{background:var(--bg)}
+body{color:var(--ink);font-family:var(--f-ui);font-size:15px;line-height:1.5;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:20px 40px}
+.wrap{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.brand{font-family:var(--f-brand);font-size:22px;letter-spacing:.02em;margin:0}
+.brand span{color:var(--accent)}
+.status{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:8px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.dot.on{background:var(--ok)}
+.composer{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px}
+textarea{width:100%;box-sizing:border-box;min-height:140px;resize:vertical;border:1px solid var(--line);border-radius:8px;
+  background:var(--code);color:var(--ink);font-family:var(--f-code);font-size:13px;line-height:1.55;padding:10px 12px;tab-size:2}
+textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.hint{font-size:12px;color:var(--muted);flex:1;min-width:160px}
+button{font-family:var(--f-ui);font-size:14px;font-weight:600;border-radius:8px;border:1px solid var(--line);
+  background:var(--panel);color:var(--ink);padding:9px 14px;cursor:pointer;min-height:40px}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+button.ghost{border-color:transparent;background:transparent;color:var(--muted);padding:9px 10px}
+button.ghost:hover{color:var(--danger)}
+button:disabled{opacity:.5;cursor:default}
+.feed{display:flex;flex-direction:column;gap:14px}
+.clip{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;min-width:0}
+.clip.fresh{border-color:var(--accent)}
+.bar{display:flex;align-items:center;gap:10px;padding:8px 8px 8px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.meta{font-size:12px;color:var(--muted);flex:1;min-width:0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-variant-numeric:tabular-nums}
+.lang{font-family:var(--f-code);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink);
+  border:1px solid var(--line);border-radius:4px;padding:1px 6px}
+.copy.done{background:var(--ok);border-color:var(--ok);color:#fff}
+.codebox{overflow-x:auto;background:var(--code);max-height:520px;overflow-y:auto}
+.codebox.open{max-height:none}
+pre{margin:0;display:flex;font-family:var(--f-code);font-size:13px;line-height:1.6}
+.ln{user-select:none;text-align:right;color:var(--c);padding:10px 10px 10px 12px;border-right:1px solid var(--line);white-space:pre}
+code{display:block;padding:10px 14px;white-space:pre;color:var(--ink)}
+.more{width:100%;border:0;border-top:1px solid var(--line);border-radius:0;color:var(--accent);background:var(--panel);font-size:13px}
+.filebar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-top:10px;border-top:1px solid var(--line)}
+.drop{border:2px dashed var(--accent)!important}
+.progress{flex:1;min-width:140px;height:8px;background:var(--code);border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.progress i{display:block;height:100%;width:0;background:var(--accent)}
+.fileclip .fbody{display:flex;align-items:center;gap:12px;padding:14px;min-width:0}
+.fname{font-family:var(--f-code);font-size:14px;word-break:break-all;flex:1;min-width:0}
+a.btn{font-family:var(--f-ui);font-size:14px;font-weight:600;border-radius:8px;background:var(--accent);color:var(--accent-ink);
+  padding:9px 14px;text-decoration:none;min-height:22px;display:inline-flex;align-items:center}
+.empty{text-align:center;color:var(--muted);padding:36px 16px;border:1px dashed var(--line);border-radius:12px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));
+  background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;font-size:14px;z-index:20}
+.notice{font-size:13px;color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+/* syntax tokens */
+.hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-literal{color:var(--k)}
+.hljs-string,.hljs-regexp,.hljs-attr,.hljs-template-tag{color:var(--s)}
+.hljs-number,.hljs-symbol{color:var(--n)}
+.hljs-comment,.hljs-quote,.hljs-meta{color:var(--c);font-style:italic}
+.hljs-title,.hljs-title.function_,.hljs-section{color:var(--f)}
+.hljs-type,.hljs-title.class_,.hljs-tag,.hljs-name,.hljs-attribute,.hljs-variable,.hljs-params{color:var(--t)}
+@media (prefers-reduced-motion:no-preference){button{transition:background .15s,color .15s}}
+</style>
+</head><body>
+<div class="wrap">
+  <header>
+    <h1 class="brand">JUMP<span>ER</span></h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">Подключение…</span></div>
+  </header>
+
+  <div class="notice" id="notice" hidden></div>
+
+  <section class="composer">
+    <label for="input" class="hint" style="flex:none">Вставьте код — он сразу появится на всех ваших устройствах</label>
+    <textarea id="input" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="// вставьте код сюда"></textarea>
+    <div class="row">
+      <span class="hint">Ctrl + Enter — отправить</span>
+      <button id="clear" type="button">Очистить</button>
+      <button id="paste" type="button">Вставить из буфера</button>
+      <button id="send" class="primary" type="button">Отправить</button>
+    </div>
+    <div class="filebar">
+      <input type="file" id="fileInput" multiple hidden>
+      <button id="pickFile" type="button">Отправить файл</button>
+      <span class="hint" id="fileHint">До 100 МБ. На ПК можно перетащить файл в это окно.</span>
+      <div class="progress" id="prog" hidden><i></i></div>
+    </div>
+  </section>
+
+  <section class="feed" id="feed"></section>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const feed = $("#feed"), input = $("#input"), sendBtn = $("#send");
+const APP = window.JumperApp || null; // мост из Android-приложения Jumper
+const DEVICE = APP || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) ? "Телефон" : "ПК";
+const MAX_CLIPS = 60;
+let col = null, clips = [], lastSeen = null, localMode = false;
+const SAMPLE = [{id:"sample",text:"// Пример: так будет выглядеть ваш код\nfunction greet(name) {\n  const time = new Date().getHours();\n  return time < 12 ? `Доброе утро, ${name}!` : `Привет, ${name}!`;\n}\n\nconsole.log(greet(\"Иван\"));",device:"ПК",createdAt:Date.now(),sample:true}];
+
+function toast(msg){const t=$("#toast");t.textContent=msg;t.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>t.hidden=true,1800)}
+function setStatus(on,text){$("#dot").classList.toggle("on",on);$("#statusText").textContent=text}
+function fmt(ts){const d=new Date(ts),n=new Date();const hm=d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});
+  return d.toDateString()===n.toDateString()?"сегодня, "+hm:d.toLocaleDateString("ru-RU",{day:"numeric",month:"short"})+", "+hm}
+function esc(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
+
+function highlight(text){
+  if (window.hljs) { try { const r = hljs.highlightAuto(text); return {html:r.value, lang:r.language||"text"}; } catch(e){} }
+  return {html:esc(text), lang:"text"};
+}
+
+async function copyText(text, btn){
+  let ok=false;
+  if(APP){ try{ APP.copy(text); ok=true; }catch(e){} }
+  if(!ok) try{ await navigator.clipboard.writeText(text); ok=true; }catch(e){
+    const ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);
+    ta.select();try{ok=document.execCommand("copy")}catch(_){}ta.remove();
+  }
+  if(ok){btn.textContent="Скопировано";btn.classList.add("done");setTimeout(()=>{btn.textContent="Скопировать всё";btn.classList.remove("done")},1600)}
+  else toast("Не удалось скопировать — выделите код вручную");
+}
+
+function render(){
+  feed.innerHTML="";
+  const list = clips.length ? clips : SAMPLE;
+  if(!clips.length){const e=document.createElement("div");e.className="empty";e.textContent="Пока пусто. Отправьте код — он появится здесь и на телефоне. Ниже пример.";feed.appendChild(e)}
+  list.forEach((c,i)=>{
+    if(c.kind==="file"){
+      const el=document.createElement("article");el.className="clip fileclip"+(i===0&&c.id===lastSeen?" fresh":"");
+      el.innerHTML=`<div class="bar"><div class="meta"><span class="lang">файл</span><span class="who"></span><span class="sz"></span></div>
+        <button class="ghost del" type="button">Удалить</button></div>
+        <div class="fbody"><span class="fname"></span><a class="btn" download>Скачать</a></div>`;
+      el.querySelector(".who").textContent=(c.device||"")+" · "+fmt(c.createdAt);
+      el.querySelector(".sz").textContent=fmtSize(c.size);
+      el.querySelector(".fname").textContent=c.name;
+      const a=el.querySelector("a");a.href="/api/files/"+encodeURIComponent(c.id);a.setAttribute("download",c.name);
+      el.querySelector(".del").onclick=()=>removeClip(c.id);
+      feed.appendChild(el);return;
+    }
+    const {html,lang}=highlight(c.text);
+    const lines=c.text.split("\n").length;
+    const el=document.createElement("article");el.className="clip"+(i===0&&clips.length&&c.id===lastSeen?" fresh":"");
+    el.innerHTML=`<div class="bar"><div class="meta"><span class="lang"></span><span class="who"></span><span>${lines} стр.</span></div>
+      <button class="ghost del" type="button">Удалить</button><button class="copy primary" type="button">Скопировать всё</button></div>
+      <div class="codebox"><pre><div class="ln"></div><code></code></pre></div>`;
+    el.querySelector(".lang").textContent=c.sample?"пример":lang;
+    el.querySelector(".who").textContent=(c.device||"")+" · "+fmt(c.createdAt);
+    el.querySelector(".ln").textContent=Array.from({length:lines},(_,k)=>k+1).join("\n");
+    el.querySelector("code").innerHTML=html;
+    el.querySelector(".copy").onclick=e=>copyText(c.text,e.currentTarget);
+    const del=el.querySelector(".del");
+    if(c.sample) del.hidden=true; else del.onclick=()=>removeClip(c.id);
+    if(lines>30){const box=el.querySelector(".codebox");const m=document.createElement("button");m.className="more";m.type="button";m.textContent="Показать весь код";
+      m.onclick=()=>{box.classList.toggle("open");m.textContent=box.classList.contains("open")?"Свернуть":"Показать весь код"};el.appendChild(m)}
+    feed.appendChild(el);
+  });
+}
+
+async function send(){
+  const text=input.value.replace(/\s+$/,"");
+  if(!text.trim()){toast("Сначала вставьте код");return}
+  if(text.length>200000){toast("Слишком большой фрагмент (больше 200 000 символов)");return}
+  sendBtn.disabled=true;
+  const clip={text,device:DEVICE,createdAt:Date.now()};
+  try{
+    if(col){ await col.add(clip); }
+    else { clip.id="l"+clip.createdAt; clips.unshift(clip); saveLocal(); render(); }
+    input.value=""; try{localStorage.removeItem("jumper-draft")}catch(e){}
+    toast("Отправлено");
+    pruneOld();
+  }catch(e){
+    toast(e&&e.code==="quota_exceeded"?"Хранилище заполнено — удалите старые фрагменты":"Не отправилось, попробуйте ещё раз");
+  }finally{sendBtn.disabled=false}
+}
+
+async function removeClip(id){
+  if(col){ try{await col.doc(id).delete()}catch(e){toast("Не удалось удалить")} }
+  else { clips=clips.filter(c=>c.id!==id); saveLocal(); render(); }
+}
+async function pruneOld(){
+  if(!col||clips.length<=MAX_CLIPS) return;
+  for(const c of clips.slice(MAX_CLIPS)){ try{await col.doc(c.id).delete()}catch(e){} }
+}
+function saveLocal(){try{localStorage.setItem("jumper-local",JSON.stringify(clips.slice(0,MAX_CLIPS)))}catch(e){}}
+function loadLocal(){try{clips=JSON.parse(localStorage.getItem("jumper-local")||"[]")}catch(e){clips=[]}}
+
+function fmtSize(b){if(b<1024)return b+" Б";if(b<1048576)return (b/1024).toFixed(0)+" КБ";return (b/1048576).toFixed(1).replace(".",",")+" МБ"}
+const MAX_FILE=100*1024*1024;
+let uploading=false;
+function uploadOne(file){
+  return new Promise((resolve,reject)=>{
+    const x=new XMLHttpRequest();
+    x.open("POST","/api/files");
+    x.setRequestHeader("X-Filename",encodeURIComponent(file.name));
+    x.setRequestHeader("X-Device",encodeURIComponent(DEVICE));
+    x.upload.onprogress=e=>{if(e.lengthComputable)$("#prog i").style.width=(e.loaded/e.total*100)+"%"};
+    x.onload=()=>x.status<300?resolve():reject(x.status);
+    x.onerror=()=>reject(0);
+    x.send(file);
+  });
+}
+async function sendFiles(files){
+  if(!API){toast("Файлы передаются только через jumper.py");return}
+  if(uploading){toast("Дождитесь окончания загрузки");return}
+  files=[...files];
+  const big=files.find(f=>f.size>MAX_FILE);
+  if(big){toast("«"+big.name+"» больше 100 МБ");return}
+  if(!files.length)return;
+  uploading=true;$("#pickFile").disabled=true;$("#prog").hidden=false;
+  try{
+    for(let k=0;k<files.length;k++){
+      $("#fileHint").textContent="Отправка "+(k+1)+" из "+files.length+": "+files[k].name;
+      $("#prog i").style.width="0";
+      await uploadOne(files[k]);
+    }
+    toast(files.length>1?"Файлы отправлены":"Файл отправлен");poll();
+  }catch(e){toast(e===413?"Файл больше 100 МБ":"Не удалось отправить файл")}
+  finally{uploading=false;$("#pickFile").disabled=false;$("#prog").hidden=true;$("#fileHint").textContent="До 100 МБ. На ПК можно перетащить файл в это окно."}
+}
+$("#pickFile").onclick=()=>$("#fileInput").click();
+$("#fileInput").onchange=e=>{sendFiles(e.target.files);e.target.value=""};
+const comp=document.querySelector(".composer");
+document.addEventListener("dragover",e=>{if(e.dataTransfer&&[...e.dataTransfer.types].includes("Files")){e.preventDefault();comp.classList.add("drop")}});
+document.addEventListener("dragleave",e=>{if(!e.relatedTarget)comp.classList.remove("drop")});
+document.addEventListener("drop",e=>{if(e.dataTransfer&&e.dataTransfer.files.length){e.preventDefault();comp.classList.remove("drop");sendFiles(e.dataTransfer.files)}});
+
+function goLocal(msg){
+  localMode=true;col=null;setStatus(false,"Только это устройство");
+  const n=$("#notice");n.textContent=msg;n.hidden=false;loadLocal();render();
+}
+
+sendBtn.onclick=send;
+$("#paste").onclick=async()=>{
+  let text=null;
+  if(APP){ try{ text=APP.paste(); }catch(e){} }
+  if(text===null) try{ if(navigator.clipboard&&navigator.clipboard.readText) text=await navigator.clipboard.readText(); }catch(e){}
+  if(text===null){ input.focus(); toast(DEVICE==="Телефон"?"Удерживайте палец в поле и выберите «Вставить»":"Нажмите Ctrl+V"); return; }
+  if(!text){ toast("Буфер обмена пуст"); return; }
+  const s=input.selectionStart, e=input.selectionEnd;
+  input.setRangeText(text,s,e,"end"); input.focus(); input.dispatchEvent(new Event("input"));
+  toast("Вставлено");
+};
+$("#clear").onclick=()=>{input.value="";input.focus();try{localStorage.removeItem("jumper-draft")}catch(e){}};
+input.addEventListener("keydown",e=>{
+  if(e.key==="Enter"&&(e.ctrlKey||e.metaKey)){e.preventDefault();send()}
+  if(e.key==="Tab"&&!e.shiftKey){e.preventDefault();const s=input.selectionStart;input.setRangeText("  ",s,input.selectionEnd,"end")}
+});
+let draftT;input.addEventListener("input",()=>{clearTimeout(draftT);draftT=setTimeout(()=>{try{localStorage.setItem("jumper-draft",input.value)}catch(e){}},400)});
+try{input.value=localStorage.getItem("jumper-draft")||""}catch(e){}
+
+render();
+
+// Синхронизация через jumper.py (локальная сеть). Если файл открыт напрямую — работает только на этом устройстве.
+const API = location.protocol.startsWith("http") ? "/api/clips" : null;
+col = API ? {
+  add: c => fetch(API,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(c)}).then(r=>{if(!r.ok)throw 0;poll()}),
+  doc: id => ({delete: () => fetch(API+"/"+encodeURIComponent(id),{method:"DELETE"}).then(r=>{if(!r.ok)throw 0;poll()})})
+} : null;
+let lastJson="", online=null;
+async function poll(){
+  try{
+    const r=await fetch(API,{cache:"no-store"}); if(!r.ok) throw 0;
+    const txt=await r.text();
+    if(online!==true){online=true;setStatus(true,"Синхронизировано · "+DEVICE);$("#notice").hidden=true}
+    if(txt===lastJson) return;
+    const first=lastJson==="", prevTop=clips[0]&&clips[0].id;
+    lastJson=txt; clips=JSON.parse(txt);
+    const top=clips[0];
+    if(!first&&top&&top.id!==prevTop){lastSeen=top.id;if(top.device!==DEVICE)toast("Новый код с устройства «"+top.device+"»")}
+    render();
+  }catch(e){
+    if(online!==false){online=false;setStatus(false,"Нет связи с ПК");const n=$("#notice");n.textContent="Не вижу jumper.py. Проверьте, что он запущен на ПК и оба устройства в одной Wi-Fi сети.";n.hidden=false}
+  }
+}
+if(API){ poll(); setInterval(()=>{ if(!document.hidden) poll(); },1500); document.addEventListener("visibilitychange",()=>{if(!document.hidden)poll()}); }
+else goLocal("Файл открыт напрямую, поэтому код сохраняется только на этом устройстве. Для передачи на телефон запустите jumper.py и откройте адрес, который он покажет.");
+</script>
+</body></html>
+'''
+
+
+if __name__ == "__main__":
+    ip = lan_ip()
+    print("Jumper запущен.")
+    print(f"  На этом ПК:    http://localhost:{PORT}")
+    print(f"  На телефоне:   http://{ip}:{PORT}")
+    print("Телефон и ПК должны быть в одной Wi-Fi сети. Остановить: Ctrl+C")
+    try:
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    except OSError:
+        print(f"Порт {PORT} занят — похоже, Jumper уже запущен.")
+        webbrowser.open(f"http://localhost:{PORT}")
+        input("Нажмите Enter, чтобы закрыть окно.")
+        sys.exit(1)
+    threading.Thread(target=discovery_responder, daemon=True).start()
+    webbrowser.open(f"http://localhost:{PORT}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
