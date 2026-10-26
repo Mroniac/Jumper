@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Jumper</string>
+    <string name="search_again">Search again</string>
+    <string name="enter_address">Enter address manually</string>
+    <string name="not_found">PC not found.\n\nMake sure Jumper is running on your computer and your phone is on the same Wi-Fi.</string>
+    <string name="pc_address">PC address</string>
+    <string name="pc_address_hint">The Jumper window on your computer shows it</string>
+    <string name="connect">Connect</string>
+    <string name="connecting_to">Connecting to %1$s…</string>
+    <string name="no_answer">Jumper does not answer at %1$s</string>
+    <string name="cancel">Cancel</string>
+    <string name="searching">Looking for a computer running Jumper…</string>
+    <string name="shared_ok">Sent to PC</string>
+    <string name="shared_fail">Could not send to PC</string>
+    <string name="choose_file">Choose a file</string>
+    <string name="downloading">Downloading %1$s…</string>
+    <string name="download_fail_generic">Could not download the file</string>
+    <string name="saved_to">Saved to Downloads/Jumper/%1$s</string>
+    <string name="download_fail">Could not download %1$s</string>
+</resources>

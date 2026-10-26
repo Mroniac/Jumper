@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="search_again">Искать снова</string>
+    <string name="enter_address">Ввести адрес вручную</string>
+    <string name="not_found">ПК не найден.\n\nПроверьте, что Jumper запущен на компьютере и телефон подключён к тому же Wi-Fi.</string>
+    <string name="pc_address">Адрес ПК</string>
+    <string name="pc_address_hint">Его показывает окно Jumper на компьютере</string>
+    <string name="connect">Подключиться</string>
+    <string name="connecting_to">Подключаюсь к %1$s…</string>
+    <string name="no_answer">По адресу %1$s Jumper не отвечает</string>
+    <string name="cancel">Отмена</string>
+    <string name="searching">Ищу компьютер с Jumper…</string>
+    <string name="shared_ok">Отправлено на ПК</string>
+    <string name="shared_fail">Не удалось отправить на ПК</string>
+    <string name="choose_file">Выберите файл</string>
+    <string name="downloading">Скачиваю %1$s…</string>
+    <string name="download_fail_generic">Не удалось скачать файл</string>
+    <string name="saved_to">Сохранено: Загрузки/Jumper/%1$s</string>
+    <string name="download_fail">Не удалось скачать %1$s</string>
+</resources>

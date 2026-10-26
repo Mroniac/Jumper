@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Jumper — передача кода и файлов (до 100 МБ) между ПК и телефоном по домашней Wi-Fi сети.
+"""Jumper — move code and files (up to 100 MB) between your PC and phone over home Wi-Fi.
+Jumper — передача кода и файлов между ПК и телефоном по домашней Wi-Fi сети.
 
-Запуск:  python jumper.py   (или Jumper.exe после сборки)
-Страница встроена в этот файл, больше ничего не нужно.
+Run / Запуск:  python jumper.py   (or Jumper.exe)
+The web page is embedded in this file. / Страница встроена в этот файл.
 """
 from urllib.parse import unquote, quote
 import json, re, os, socket, sys, threading, time, uuid, webbrowser
@@ -18,6 +19,36 @@ FILES_DIR = os.path.join(HERE, "jumper_files")
 MAX_FILE = 100 * 1024 * 1024
 os.makedirs(FILES_DIR, exist_ok=True)
 lock = threading.Lock()
+
+
+def system_is_russian():
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            lang_id = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+            return (lang_id & 0x3FF) in (0x19, 0x22, 0x23, 0x3F)  # ru, uk, be, kk
+        import locale
+        return (locale.getlocale()[0] or os.environ.get("LANG", "")).lower().startswith(("ru", "uk", "be", "kk"))
+    except Exception:
+        return False
+
+
+RU = system_is_russian()
+MSG = {
+    "no_discovery": ("Автопоиск не запустился (порт 8766 занят) — в приложении введите адрес вручную.",
+                     "Auto-discovery is off (port 8766 is busy). Enter the address manually in the app."),
+    "started": ("Jumper запущен.", "Jumper is running."),
+    "this_pc": ("  На этом ПК:    ", "  On this PC:    "),
+    "phone": ("  На телефоне:   ", "  On your phone: "),
+    "hint": ("Телефон и ПК должны быть в одной Wi-Fi сети. Остановить: Ctrl+C",
+             "Phone and PC must be on the same Wi-Fi network. Stop: Ctrl+C"),
+    "busy": ("Порт %d занят — похоже, Jumper уже запущен.", "Port %d is busy. Jumper is probably already running."),
+    "enter": ("Нажмите Enter, чтобы закрыть окно.", "Press Enter to close this window."),
+}
+
+
+def msg(key):
+    return MSG[key][0 if RU else 1]
 
 
 def load():
@@ -73,7 +104,7 @@ def discovery_responder():
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("0.0.0.0", DISCOVERY_PORT))
     except OSError:
-        print("Автопоиск не запустился (порт 8766 занят) — в приложении введите адрес вручную.")
+        print(msg("no_discovery"))
         return
     reply = ("JUMPER_HERE %d %s" % (PORT, socket.gethostname())).encode("utf-8")
     while True:
@@ -191,7 +222,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 PAGE_HTML = r'''<!doctype html>
-<html lang="ru"><head><meta charset="utf-8">
+<html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Jumper</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -277,24 +308,24 @@ a.btn{font-family:var(--f-ui);font-size:14px;font-weight:600;border-radius:8px;b
 <div class="wrap">
   <header>
     <h1 class="brand">JUMP<span>ER</span></h1>
-    <div class="status"><span class="dot" id="dot"></span><span id="statusText">Подключение…</span></div>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText" data-i18n="connecting">Подключение…</span></div>
   </header>
 
   <div class="notice" id="notice" hidden></div>
 
   <section class="composer">
-    <label for="input" class="hint" style="flex:none">Вставьте код — он сразу появится на всех ваших устройствах</label>
-    <textarea id="input" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="// вставьте код сюда"></textarea>
+    <label for="input" class="hint" style="flex:none" data-i18n="lead">Вставьте код — он сразу появится на всех ваших устройствах</label>
+    <textarea id="input" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="// вставьте код сюда" data-i18n-ph="placeholder"></textarea>
     <div class="row">
-      <span class="hint">Ctrl + Enter — отправить</span>
-      <button id="clear" type="button">Очистить</button>
-      <button id="paste" type="button">Вставить из буфера</button>
-      <button id="send" class="primary" type="button">Отправить</button>
+      <span class="hint" data-i18n="ctrlEnter">Ctrl + Enter — отправить</span>
+      <button id="clear" type="button" data-i18n="clear">Очистить</button>
+      <button id="paste" type="button" data-i18n="paste">Вставить из буфера</button>
+      <button id="send" class="primary" type="button" data-i18n="send">Отправить</button>
     </div>
     <div class="filebar">
       <input type="file" id="fileInput" multiple hidden>
-      <button id="pickFile" type="button">Отправить файл</button>
-      <span class="hint" id="fileHint">До 100 МБ. На ПК можно перетащить файл в это окно.</span>
+      <button id="pickFile" type="button" data-i18n="sendFile">Отправить файл</button>
+      <span class="hint" id="fileHint" data-i18n="fileHint">До 100 МБ. На ПК можно перетащить файл в это окно.</span>
       <div class="progress" id="prog" hidden><i></i></div>
     </div>
   </section>
@@ -307,15 +338,65 @@ a.btn{font-family:var(--f-ui);font-size:14px;font-weight:600;border-radius:8px;b
 const $ = s => document.querySelector(s);
 const feed = $("#feed"), input = $("#input"), sendBtn = $("#send");
 const APP = window.JumperApp || null; // мост из Android-приложения Jumper
-const DEVICE = APP || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) ? "Телефон" : "ПК";
+
+// ---- Языки: русский для русской системы, иначе английский ----
+const LANG = /^ru|^uk|^be|^kk/i.test(navigator.language || "") ? "ru" : "en";
+const I18N = {
+  ru: {
+    connecting:"Подключение…", lead:"Вставьте код — он сразу появится на всех ваших устройствах", placeholder:"// вставьте код сюда",
+    ctrlEnter:"Ctrl + Enter — отправить", clear:"Очистить", paste:"Вставить из буфера", send:"Отправить", sendFile:"Отправить файл",
+    fileHint:"До 100 МБ. На ПК можно перетащить файл в это окно.", pc:"ПК", phone:"Телефон", today:"сегодня",
+    copied:"Скопировано", copyAll:"Скопировать всё", copyFail:"Не удалось скопировать — выделите код вручную",
+    empty:"Пока пусто. Отправьте код — он появится здесь и на телефоне. Ниже пример.", file:"файл", del:"Удалить", download:"Скачать",
+    lines:"стр.", sample:"пример", showAll:"Показать весь код", collapse:"Свернуть",
+    needCode:"Сначала вставьте код", tooBig:"Слишком большой фрагмент (больше 200 000 символов)", sent:"Отправлено",
+    quota:"Хранилище заполнено — удалите старые фрагменты", sendFail:"Не отправилось, попробуйте ещё раз", delFail:"Не удалось удалить",
+    b:"Б", kb:"КБ", mb:"МБ", filesNeedServer:"Файлы передаются только через jumper.py", waitUpload:"Дождитесь окончания загрузки",
+    over100:"«{0}» больше 100 МБ", sending:"Отправка {0} из {1}: {2}", filesSent:"Файлы отправлены", fileSent:"Файл отправлен",
+    fileTooBig:"Файл больше 100 МБ", fileFail:"Не удалось отправить файл", localOnly:"Только это устройство",
+    holdPaste:"Удерживайте палец в поле и выберите «Вставить»", pressCtrlV:"Нажмите Ctrl+V", clipEmpty:"Буфер обмена пуст", pasted:"Вставлено",
+    synced:"Синхронизировано", noPc:"Нет связи с ПК", newFrom:"Новый код с устройства «{0}»",
+    noServer:"Не вижу jumper.py. Проверьте, что он запущен на ПК и оба устройства в одной Wi-Fi сети.",
+    direct:"Файл открыт напрямую, поэтому код сохраняется только на этом устройстве. Для передачи на телефон запустите jumper.py и откройте адрес, который он покажет.",
+    sampleCode:"// Пример: так будет выглядеть ваш код\nfunction greet(name) {\n  const hour = new Date().getHours();\n  return hour < 12 ? `Доброе утро, ${name}!` : `Привет, ${name}!`;\n}\n\nconsole.log(greet(\"Jumper\"));"
+  },
+  en: {
+    connecting:"Connecting…", lead:"Paste code here and it shows up on all your devices right away", placeholder:"// paste code here",
+    ctrlEnter:"Ctrl + Enter to send", clear:"Clear", paste:"Paste from clipboard", send:"Send", sendFile:"Send file",
+    fileHint:"Up to 100 MB. On a PC you can drop a file onto this window.", pc:"PC", phone:"Phone", today:"today",
+    copied:"Copied", copyAll:"Copy all", copyFail:"Couldn't copy. Select the code manually",
+    empty:"Nothing here yet. Send some code and it appears here and on your phone. Example below.", file:"file", del:"Delete", download:"Download",
+    lines:"lines", sample:"example", showAll:"Show all code", collapse:"Collapse",
+    needCode:"Paste some code first", tooBig:"Snippet is too large (over 200,000 characters)", sent:"Sent",
+    quota:"Storage is full. Delete old snippets", sendFail:"Not sent, please try again", delFail:"Couldn't delete",
+    b:"B", kb:"KB", mb:"MB", filesNeedServer:"Files can only be sent through jumper.py", waitUpload:"Wait for the current upload to finish",
+    over100:"“{0}” is larger than 100 MB", sending:"Sending {0} of {1}: {2}", filesSent:"Files sent", fileSent:"File sent",
+    fileTooBig:"File is larger than 100 MB", fileFail:"Couldn't send the file", localOnly:"This device only",
+    holdPaste:"Long-press the field and choose Paste", pressCtrlV:"Press Ctrl+V", clipEmpty:"Clipboard is empty", pasted:"Pasted",
+    synced:"Synced", noPc:"PC not reachable", newFrom:"New code from {0}",
+    noServer:"Can't reach jumper.py. Make sure it's running on your PC and both devices are on the same Wi-Fi.",
+    direct:"This file was opened directly, so code is saved on this device only. To reach your phone, run jumper.py and open the address it shows.",
+    sampleCode:"// Example: this is how your code will look\nfunction greet(name) {\n  const hour = new Date().getHours();\n  return hour < 12 ? `Good morning, ${name}!` : `Hello, ${name}!`;\n}\n\nconsole.log(greet(\"Jumper\"));"
+  }
+};
+const T = (k, ...a) => (I18N[LANG][k] || I18N.ru[k] || k).replace(/\{(\d)\}/g, (_, i) => a[i]);
+document.documentElement.lang = LANG;
+document.querySelectorAll("[data-i18n]").forEach(el => el.textContent = T(el.dataset.i18n));
+document.querySelectorAll("[data-i18n-ph]").forEach(el => el.placeholder = T(el.dataset.i18nPh));
+document.title = "Jumper";
+
+// Устройство хранится кодом ("pc"/"phone"), старые записи — по-русски
+const devCode = d => (d === "phone" || d === "Телефон") ? "phone" : (d === "pc" || d === "ПК") ? "pc" : (d || "");
+const devName = d => { const c = devCode(d); return c === "phone" || c === "pc" ? T(c) : c; };
+const DEVICE = APP || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) ? "phone" : "pc";
 const MAX_CLIPS = 60;
 let col = null, clips = [], lastSeen = null, localMode = false;
-const SAMPLE = [{id:"sample",text:"// Пример: так будет выглядеть ваш код\nfunction greet(name) {\n  const time = new Date().getHours();\n  return time < 12 ? `Доброе утро, ${name}!` : `Привет, ${name}!`;\n}\n\nconsole.log(greet(\"Иван\"));",device:"ПК",createdAt:Date.now(),sample:true}];
+const SAMPLE = [{id:"sample",text:T("sampleCode"),device:"pc",createdAt:Date.now(),sample:true}];
 
 function toast(msg){const t=$("#toast");t.textContent=msg;t.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>t.hidden=true,1800)}
 function setStatus(on,text){$("#dot").classList.toggle("on",on);$("#statusText").textContent=text}
-function fmt(ts){const d=new Date(ts),n=new Date();const hm=d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});
-  return d.toDateString()===n.toDateString()?"сегодня, "+hm:d.toLocaleDateString("ru-RU",{day:"numeric",month:"short"})+", "+hm}
+function fmt(ts){const d=new Date(ts),n=new Date();const hm=d.toLocaleTimeString(LANG==="ru"?"ru-RU":undefined,{hour:"2-digit",minute:"2-digit"});
+  return d.toDateString()===n.toDateString()?T("today")+", "+hm:d.toLocaleDateString(LANG==="ru"?"ru-RU":undefined,{day:"numeric",month:"short"})+", "+hm}
 function esc(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
 
 function highlight(text){
@@ -330,21 +411,21 @@ async function copyText(text, btn){
     const ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);
     ta.select();try{ok=document.execCommand("copy")}catch(_){}ta.remove();
   }
-  if(ok){btn.textContent="Скопировано";btn.classList.add("done");setTimeout(()=>{btn.textContent="Скопировать всё";btn.classList.remove("done")},1600)}
-  else toast("Не удалось скопировать — выделите код вручную");
+  if(ok){btn.textContent=T("copied");btn.classList.add("done");setTimeout(()=>{btn.textContent=T("copyAll");btn.classList.remove("done")},1600)}
+  else toast(T("copyFail"));
 }
 
 function render(){
   feed.innerHTML="";
   const list = clips.length ? clips : SAMPLE;
-  if(!clips.length){const e=document.createElement("div");e.className="empty";e.textContent="Пока пусто. Отправьте код — он появится здесь и на телефоне. Ниже пример.";feed.appendChild(e)}
+  if(!clips.length){const e=document.createElement("div");e.className="empty";e.textContent=T("empty");feed.appendChild(e)}
   list.forEach((c,i)=>{
     if(c.kind==="file"){
       const el=document.createElement("article");el.className="clip fileclip"+(i===0&&c.id===lastSeen?" fresh":"");
-      el.innerHTML=`<div class="bar"><div class="meta"><span class="lang">файл</span><span class="who"></span><span class="sz"></span></div>
-        <button class="ghost del" type="button">Удалить</button></div>
-        <div class="fbody"><span class="fname"></span><a class="btn" download>Скачать</a></div>`;
-      el.querySelector(".who").textContent=(c.device||"")+" · "+fmt(c.createdAt);
+      el.innerHTML=`<div class="bar"><div class="meta"><span class="lang">${T("file")}</span><span class="who"></span><span class="sz"></span></div>
+        <button class="ghost del" type="button">${T("del")}</button></div>
+        <div class="fbody"><span class="fname"></span><a class="btn" download>${T("download")}</a></div>`;
+      el.querySelector(".who").textContent=devName(c.device)+" · "+fmt(c.createdAt);
       el.querySelector(".sz").textContent=fmtSize(c.size);
       el.querySelector(".fname").textContent=c.name;
       const a=el.querySelector("a");a.href="/api/files/"+encodeURIComponent(c.id);a.setAttribute("download",c.name);
@@ -354,41 +435,41 @@ function render(){
     const {html,lang}=highlight(c.text);
     const lines=c.text.split("\n").length;
     const el=document.createElement("article");el.className="clip"+(i===0&&clips.length&&c.id===lastSeen?" fresh":"");
-    el.innerHTML=`<div class="bar"><div class="meta"><span class="lang"></span><span class="who"></span><span>${lines} стр.</span></div>
-      <button class="ghost del" type="button">Удалить</button><button class="copy primary" type="button">Скопировать всё</button></div>
+    el.innerHTML=`<div class="bar"><div class="meta"><span class="lang"></span><span class="who"></span><span>${lines} ${T("lines")}</span></div>
+      <button class="ghost del" type="button">${T("del")}</button><button class="copy primary" type="button">${T("copyAll")}</button></div>
       <div class="codebox"><pre><div class="ln"></div><code></code></pre></div>`;
-    el.querySelector(".lang").textContent=c.sample?"пример":lang;
-    el.querySelector(".who").textContent=(c.device||"")+" · "+fmt(c.createdAt);
+    el.querySelector(".lang").textContent=c.sample?T("sample"):lang;
+    el.querySelector(".who").textContent=devName(c.device)+" · "+fmt(c.createdAt);
     el.querySelector(".ln").textContent=Array.from({length:lines},(_,k)=>k+1).join("\n");
     el.querySelector("code").innerHTML=html;
     el.querySelector(".copy").onclick=e=>copyText(c.text,e.currentTarget);
     const del=el.querySelector(".del");
     if(c.sample) del.hidden=true; else del.onclick=()=>removeClip(c.id);
-    if(lines>30){const box=el.querySelector(".codebox");const m=document.createElement("button");m.className="more";m.type="button";m.textContent="Показать весь код";
-      m.onclick=()=>{box.classList.toggle("open");m.textContent=box.classList.contains("open")?"Свернуть":"Показать весь код"};el.appendChild(m)}
+    if(lines>30){const box=el.querySelector(".codebox");const m=document.createElement("button");m.className="more";m.type="button";m.textContent=T("showAll");
+      m.onclick=()=>{box.classList.toggle("open");m.textContent=box.classList.contains("open")?T("collapse"):T("showAll")};el.appendChild(m)}
     feed.appendChild(el);
   });
 }
 
 async function send(){
   const text=input.value.replace(/\s+$/,"");
-  if(!text.trim()){toast("Сначала вставьте код");return}
-  if(text.length>200000){toast("Слишком большой фрагмент (больше 200 000 символов)");return}
+  if(!text.trim()){toast(T("needCode"));return}
+  if(text.length>200000){toast(T("tooBig"));return}
   sendBtn.disabled=true;
   const clip={text,device:DEVICE,createdAt:Date.now()};
   try{
     if(col){ await col.add(clip); }
     else { clip.id="l"+clip.createdAt; clips.unshift(clip); saveLocal(); render(); }
     input.value=""; try{localStorage.removeItem("jumper-draft")}catch(e){}
-    toast("Отправлено");
+    toast(T("sent"));
     pruneOld();
   }catch(e){
-    toast(e&&e.code==="quota_exceeded"?"Хранилище заполнено — удалите старые фрагменты":"Не отправилось, попробуйте ещё раз");
+    toast(e&&e.code==="quota_exceeded"?T("quota"):T("sendFail"));
   }finally{sendBtn.disabled=false}
 }
 
 async function removeClip(id){
-  if(col){ try{await col.doc(id).delete()}catch(e){toast("Не удалось удалить")} }
+  if(col){ try{await col.doc(id).delete()}catch(e){toast(T("delFail"))} }
   else { clips=clips.filter(c=>c.id!==id); saveLocal(); render(); }
 }
 async function pruneOld(){
@@ -398,7 +479,7 @@ async function pruneOld(){
 function saveLocal(){try{localStorage.setItem("jumper-local",JSON.stringify(clips.slice(0,MAX_CLIPS)))}catch(e){}}
 function loadLocal(){try{clips=JSON.parse(localStorage.getItem("jumper-local")||"[]")}catch(e){clips=[]}}
 
-function fmtSize(b){if(b<1024)return b+" Б";if(b<1048576)return (b/1024).toFixed(0)+" КБ";return (b/1048576).toFixed(1).replace(".",",")+" МБ"}
+function fmtSize(b){if(b<1024)return b+" "+T("b");if(b<1048576)return (b/1024).toFixed(0)+" "+T("kb");const m=(b/1048576).toFixed(1);return (LANG==="ru"?m.replace(".",","):m)+" "+T("mb")}
 const MAX_FILE=100*1024*1024;
 let uploading=false;
 function uploadOne(file){
@@ -414,22 +495,22 @@ function uploadOne(file){
   });
 }
 async function sendFiles(files){
-  if(!API){toast("Файлы передаются только через jumper.py");return}
-  if(uploading){toast("Дождитесь окончания загрузки");return}
+  if(!API){toast(T("filesNeedServer"));return}
+  if(uploading){toast(T("waitUpload"));return}
   files=[...files];
   const big=files.find(f=>f.size>MAX_FILE);
-  if(big){toast("«"+big.name+"» больше 100 МБ");return}
+  if(big){toast(T("over100",big.name));return}
   if(!files.length)return;
   uploading=true;$("#pickFile").disabled=true;$("#prog").hidden=false;
   try{
     for(let k=0;k<files.length;k++){
-      $("#fileHint").textContent="Отправка "+(k+1)+" из "+files.length+": "+files[k].name;
+      $("#fileHint").textContent=T("sending",k+1,files.length,files[k].name);
       $("#prog i").style.width="0";
       await uploadOne(files[k]);
     }
-    toast(files.length>1?"Файлы отправлены":"Файл отправлен");poll();
-  }catch(e){toast(e===413?"Файл больше 100 МБ":"Не удалось отправить файл")}
-  finally{uploading=false;$("#pickFile").disabled=false;$("#prog").hidden=true;$("#fileHint").textContent="До 100 МБ. На ПК можно перетащить файл в это окно."}
+    toast(files.length>1?T("filesSent"):T("fileSent"));poll();
+  }catch(e){toast(e===413?T("fileTooBig"):T("fileFail"))}
+  finally{uploading=false;$("#pickFile").disabled=false;$("#prog").hidden=true;$("#fileHint").textContent=T("fileHint")}
 }
 $("#pickFile").onclick=()=>$("#fileInput").click();
 $("#fileInput").onchange=e=>{sendFiles(e.target.files);e.target.value=""};
@@ -439,7 +520,7 @@ document.addEventListener("dragleave",e=>{if(!e.relatedTarget)comp.classList.rem
 document.addEventListener("drop",e=>{if(e.dataTransfer&&e.dataTransfer.files.length){e.preventDefault();comp.classList.remove("drop");sendFiles(e.dataTransfer.files)}});
 
 function goLocal(msg){
-  localMode=true;col=null;setStatus(false,"Только это устройство");
+  localMode=true;col=null;setStatus(false,T("localOnly"));
   const n=$("#notice");n.textContent=msg;n.hidden=false;loadLocal();render();
 }
 
@@ -448,11 +529,11 @@ $("#paste").onclick=async()=>{
   let text=null;
   if(APP){ try{ text=APP.paste(); }catch(e){} }
   if(text===null) try{ if(navigator.clipboard&&navigator.clipboard.readText) text=await navigator.clipboard.readText(); }catch(e){}
-  if(text===null){ input.focus(); toast(DEVICE==="Телефон"?"Удерживайте палец в поле и выберите «Вставить»":"Нажмите Ctrl+V"); return; }
-  if(!text){ toast("Буфер обмена пуст"); return; }
+  if(text===null){ input.focus(); toast(DEVICE==="phone"?T("holdPaste"):T("pressCtrlV")); return; }
+  if(!text){ toast(T("clipEmpty")); return; }
   const s=input.selectionStart, e=input.selectionEnd;
   input.setRangeText(text,s,e,"end"); input.focus(); input.dispatchEvent(new Event("input"));
-  toast("Вставлено");
+  toast(T("pasted"));
 };
 $("#clear").onclick=()=>{input.value="";input.focus();try{localStorage.removeItem("jumper-draft")}catch(e){}};
 input.addEventListener("keydown",e=>{
@@ -475,19 +556,19 @@ async function poll(){
   try{
     const r=await fetch(API,{cache:"no-store"}); if(!r.ok) throw 0;
     const txt=await r.text();
-    if(online!==true){online=true;setStatus(true,"Синхронизировано · "+DEVICE);$("#notice").hidden=true}
+    if(online!==true){online=true;setStatus(true,T("synced")+" · "+devName(DEVICE));$("#notice").hidden=true}
     if(txt===lastJson) return;
     const first=lastJson==="", prevTop=clips[0]&&clips[0].id;
     lastJson=txt; clips=JSON.parse(txt);
     const top=clips[0];
-    if(!first&&top&&top.id!==prevTop){lastSeen=top.id;if(top.device!==DEVICE)toast("Новый код с устройства «"+top.device+"»")}
+    if(!first&&top&&top.id!==prevTop){lastSeen=top.id;if(devCode(top.device)!==DEVICE)toast(T("newFrom",devName(top.device)))}
     render();
   }catch(e){
-    if(online!==false){online=false;setStatus(false,"Нет связи с ПК");const n=$("#notice");n.textContent="Не вижу jumper.py. Проверьте, что он запущен на ПК и оба устройства в одной Wi-Fi сети.";n.hidden=false}
+    if(online!==false){online=false;setStatus(false,T("noPc"));const n=$("#notice");n.textContent=T("noServer");n.hidden=false}
   }
 }
 if(API){ poll(); setInterval(()=>{ if(!document.hidden) poll(); },1500); document.addEventListener("visibilitychange",()=>{if(!document.hidden)poll()}); }
-else goLocal("Файл открыт напрямую, поэтому код сохраняется только на этом устройстве. Для передачи на телефон запустите jumper.py и откройте адрес, который он покажет.");
+else goLocal(T("direct"));
 </script>
 </body></html>
 '''
@@ -495,16 +576,16 @@ else goLocal("Файл открыт напрямую, поэтому код со
 
 if __name__ == "__main__":
     ip = lan_ip()
-    print("Jumper запущен.")
-    print(f"  На этом ПК:    http://localhost:{PORT}")
-    print(f"  На телефоне:   http://{ip}:{PORT}")
-    print("Телефон и ПК должны быть в одной Wi-Fi сети. Остановить: Ctrl+C")
+    print(msg("started"))
+    print(msg("this_pc") + f"http://localhost:{PORT}")
+    print(msg("phone") + f"http://{ip}:{PORT}")
+    print(msg("hint"))
     try:
         server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     except OSError:
-        print(f"Порт {PORT} занят — похоже, Jumper уже запущен.")
+        print(msg("busy") % PORT)
         webbrowser.open(f"http://localhost:{PORT}")
-        input("Нажмите Enter, чтобы закрыть окно.")
+        input(msg("enter"))
         sys.exit(1)
     threading.Thread(target=discovery_responder, daemon=True).start()
     webbrowser.open(f"http://localhost:{PORT}")

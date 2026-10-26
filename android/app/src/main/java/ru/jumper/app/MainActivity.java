@@ -186,12 +186,12 @@ public class MainActivity extends Activity {
         box.addView(buttons, bp);
 
         Button retry = new Button(this);
-        retry.setText("Искать снова");
+        retry.setText(R.string.search_again);
         retry.setOnClickListener(v -> discover());
         buttons.addView(retry);
 
         Button manual = new Button(this);
-        manual.setText("Ввести адрес вручную");
+        manual.setText(R.string.enter_address);
         manual.setOnClickListener(v -> askAddress());
         buttons.addView(manual);
 
@@ -211,7 +211,7 @@ public class MainActivity extends Activity {
         overlay.setVisibility(View.VISIBLE);
         spinner.setVisibility(View.GONE);
         buttons.setVisibility(View.VISIBLE);
-        statusText.setText("ПК не найден.\n\nПроверьте, что Jumper запущен на компьютере и телефон подключён к тому же Wi-Fi.");
+        statusText.setText(R.string.not_found);
     }
 
     private void askAddress() {
@@ -223,28 +223,28 @@ public class MainActivity extends Activity {
         wrap.setPadding(dp(20), dp(8), dp(20), 0);
         wrap.addView(input);
         new AlertDialog.Builder(this)
-                .setTitle("Адрес ПК")
-                .setMessage("Его показывает окно Jumper на компьютере")
+                .setTitle(R.string.pc_address)
+                .setMessage(R.string.pc_address_hint)
                 .setView(wrap)
-                .setPositiveButton("Подключиться", (d, w) -> {
+                .setPositiveButton(R.string.connect, (d, w) -> {
                     String a = input.getText().toString().trim()
                             .replaceFirst("^https?://", "").replaceAll("/.*$", "");
                     if (a.isEmpty()) return;
                     if (!a.contains(":")) a = a + ":" + HTTP_PORT;
                     final String candidate = a;
-                    showSearching("Подключаюсь к " + candidate + "…");
+                    showSearching(getString(R.string.connecting_to, candidate));
                     new Thread(() -> {
                         boolean ok = ping(candidate);
                         ui.post(() -> {
                             if (ok) connected(candidate);
                             else {
                                 showNotFound();
-                                toast("По адресу " + candidate + " Jumper не отвечает");
+                                toast(getString(R.string.no_answer, candidate));
                             }
                         });
                     }).start();
                 })
-                .setNegativeButton("Отмена", null)
+                .setNegativeButton(R.string.cancel, null)
                 .show();
     }
 
@@ -261,7 +261,7 @@ public class MainActivity extends Activity {
     private void discover() {
         if (searching) return;
         searching = true;
-        showSearching("Ищу компьютер с Jumper…");
+        showSearching(getString(R.string.searching));
         final String saved = host;
         new Thread(() -> {
             String found = null;
@@ -393,7 +393,7 @@ public class MainActivity extends Activity {
             try {
                 JSONObject body = new JSONObject();
                 body.put("text", text);
-                body.put("device", "Телефон");
+                body.put("device", "phone");
                 byte[] data = body.toString().getBytes(StandardCharsets.UTF_8);
                 c = (HttpURLConnection) new URL("http://" + h + "/api/clips").openConnection();
                 c.setRequestMethod("POST");
@@ -411,7 +411,7 @@ public class MainActivity extends Activity {
             }
             final boolean sent = ok;
             ui.post(() -> {
-                toast(sent ? "Отправлено на ПК" : "Не удалось отправить на ПК");
+                toast(getString(sent ? R.string.shared_ok : R.string.shared_fail));
                 if (sent) web.evaluateJavascript("typeof poll==='function'&&poll()", null);
             });
         }).start();
@@ -463,7 +463,7 @@ public class MainActivity extends Activity {
                     pick.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
                 }
                 try {
-                    startActivityForResult(Intent.createChooser(pick, "Выберите файл"), REQ_FILES);
+                    startActivityForResult(Intent.createChooser(pick, getString(R.string.choose_file)), REQ_FILES);
                 } catch (Exception e) {
                     fileCallback = null;
                     return false;
@@ -519,14 +519,14 @@ public class MainActivity extends Activity {
                 r.setTitle(name);
                 r.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
                 ((DownloadManager) getSystemService(DOWNLOAD_SERVICE)).enqueue(r);
-                toast("Скачиваю " + name + "…");
+                toast(getString(R.string.downloading, name));
             } catch (Exception e) {
-                toast("Не удалось скачать файл");
+                toast(getString(R.string.download_fail_generic));
             }
             return;
         }
 
-        toast("Скачиваю " + name + "…");
+        toast(getString(R.string.downloading, name));
         new Thread(() -> {
             boolean ok = false;
             Uri item = null;
@@ -565,7 +565,7 @@ public class MainActivity extends Activity {
                 if (c != null) c.disconnect();
             }
             final boolean saved = ok;
-            ui.post(() -> toast(saved ? "Сохранено: Загрузки/Jumper/" + name : "Не удалось скачать " + name));
+            ui.post(() -> toast(getString(saved ? R.string.saved_to : R.string.download_fail, name)));
         }).start();
     }
 

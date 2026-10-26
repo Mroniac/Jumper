@@ -1,51 +1,54 @@
 # Jumper
 
-Быстрый перенос кода, текста и файлов между ПК и телефоном по домашней Wi-Fi сети. Без облака, без регистрации, без пересылки самому себе на почту.
+**English** · [Русский](README.ru.md)
 
-На ПК запускается маленький сервер, на телефоне открывается приложение (или страница в браузере). Вставили код на одном устройстве — через секунду он на другом, с подсветкой синтаксиса и кнопкой «Скопировать всё».
+Move code, text and files between your PC and your phone over home Wi-Fi. No cloud, no sign-up, no emailing things to yourself.
 
-## Возможности
+A small server runs on the PC, and the phone opens the app (or a page in any browser). Paste code on one device and a second later it's on the other, with syntax highlighting and a "Copy all" button.
 
-- Лента фрагментов кода с подсветкой синтаксиса и номерами строк
-- Кнопки «Скопировать всё» и «Вставить из буфера»
-- Передача файлов до 100 МБ в обе стороны, на ПК — перетаскиванием в окно
-- Android-приложение само находит ПК в сети, даже если его адрес сменился
-- «Поделиться → Jumper» из любого приложения на телефоне отправляет текст на ПК
-- Светлая и тёмная тема
-- Всё хранится только у вас на ПК: последние 60 фрагментов и файлов
+## Features
 
-## Установка
+- A feed of code snippets with syntax highlighting and line numbers
+- "Copy all" and "Paste from clipboard" buttons
+- File transfer up to 100 MB both ways; drag and drop on the PC
+- The Android app finds your PC on the network by itself, even after its IP address changes
+- "Share → Jumper" from any Android app sends text to the PC
+- Light and dark themes
+- English and Russian interface, picked from the system language
+- Everything stays on your PC: the last 60 snippets and files
 
-Готовые файлы — в разделе [Releases](../../releases):
+## Install
 
-| Файл | Куда |
+Ready-to-use files are in [Releases](../../releases):
+
+| File | Where |
 |---|---|
-| `Jumper.exe` | на ПК с Windows 10/11 |
-| `Jumper.apk` | на телефон с Android 7 и новее |
+| `Jumper.exe` | Windows 10/11 PC |
+| `Jumper.apk` | Android 7 or newer |
 
-1. Запустите `Jumper.exe`. Откроется окно с адресом и страница в браузере. Windows спросит про доступ к сети — разрешите для частных сетей.
-2. Установите `Jumper.apk` на телефон (разрешите установку из этого источника) и откройте. Приложение найдёт ПК само.
+1. Run `Jumper.exe`. A window with the address opens, and the page opens in your browser. When Windows asks about network access, allow it for private networks.
+2. Install `Jumper.apk` on your phone (allow installs from this source) and open it. The app finds the PC automatically.
 
-Телефон и ПК должны быть в одной Wi-Fi сети. Без приложения тоже можно: откройте на телефоне адрес из окна Jumper (`http://192.168.x.x:8765`) в любом браузере.
+The phone and the PC must be on the same Wi-Fi network. The app is optional: you can open the address shown in the Jumper window (`http://192.168.x.x:8765`) in any phone browser.
 
-## Запуск из исходников
+## Run from source
 
 ```
 cd pc
 python jumper.py
 ```
 
-Нужен Python 3.8+, сторонних библиотек нет. `pc/build.bat` собирает `Jumper.exe` через PyInstaller.
+Requires Python 3.8+, no third-party packages. `pc/build.bat` builds `Jumper.exe` with PyInstaller.
 
-Android-проект лежит в `android/`: откройте его в Android Studio и выберите Build → Build APK(s).
+The Android project is in `android/`: open it in Android Studio and choose Build → Build APK(s).
 
-## Как это устроено
+## How it works
 
-- `pc/jumper.py` — HTTP-сервер на порту 8765 со встроенной страницей и UDP-ответчик автопоиска на порту 8766. Данные хранятся рядом с программой в `jumper_clips.json` и папке `jumper_files`.
-- `android/` — приложение на WebView. Ищет ПК широковещательным запросом `JUMPER_DISCOVER`, добавляет странице доступ к буферу обмена, выбор файлов и сохранение в «Загрузки/Jumper».
+- `pc/jumper.py` is an HTTP server on port 8765 with the page built in, plus a UDP discovery responder on port 8766. Data is stored next to the program in `jumper_clips.json` and the `jumper_files` folder.
+- `android/` is a WebView app. It finds the PC with a `JUMPER_DISCOVER` broadcast and gives the page clipboard access, a file picker and saving to Downloads/Jumper.
 
-Jumper рассчитан на домашнюю сеть: пароля нет, поэтому не запускайте его в общественном Wi-Fi.
+Jumper is meant for a home network and has no password, so don't run it on public Wi-Fi.
 
-## Сборка
+## Builds
 
-GitHub Actions собирает APK и EXE при каждом изменении (вкладка Actions → последний запуск → Artifacts). Чтобы файлы появились в Releases, создайте релиз: Releases → Draft a new release → тег, например `v1.0` → Publish.
+GitHub Actions builds the APK and EXE on every push (Actions tab → latest run → Artifacts). To attach them to a release, create one: Releases → Draft a new release → a tag such as `v1.0` → Publish.
